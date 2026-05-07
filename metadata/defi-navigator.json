@@ -1,0 +1,19 @@
+{
+  "name": "DeFi Navigator",
+  "description": "Yield optimization agent that scans DeFi protocols across Arc Network, finds the best APY opportunities, auto-compounds rewards, and rebalances portfolios based on risk tolerance.",
+  "version": "1.0.0",
+  "capabilities": [
+    "yield-farming",
+    "auto-compound",
+    "portfolio-rebalance",
+    "risk-assessment",
+    "gas-optimization",
+    "multi-protocol-routing"
+  ],
+  "category": "DeFi",
+  "author": "0x15F8560a69ceCf111e19dA3b6098eaBb4ddD4631",
+  "chain": "Arc Network",
+  "pricing": "2 USDC per strategy execution",
+  "response_time": "< 10 seconds",
+  "image": "https://api.dicebear.com/7.x/bottts/svg?seed=DeFiNavigator&backgroundColor=13304e"
+}

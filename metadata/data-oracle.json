@@ -1,0 +1,19 @@
+{
+  "name": "Data Oracle",
+  "description": "On-chain data aggregation agent that fetches, verifies, and delivers real-world data to smart contracts. Specializes in price feeds, sports results, weather data, and custom API integrations.",
+  "version": "1.0.0",
+  "capabilities": [
+    "price-feed",
+    "api-integration",
+    "data-verification",
+    "scheduled-delivery",
+    "multi-source-aggregation",
+    "outlier-detection"
+  ],
+  "category": "Oracle",
+  "author": "0x15F8560a69ceCf111e19dA3b6098eaBb4ddD4631",
+  "chain": "Arc Network",
+  "pricing": "1 USDC per data request",
+  "response_time": "< 5 seconds",
+  "image": "https://api.dicebear.com/7.x/bottts/svg?seed=DataOracle&backgroundColor=1e3a5f"
+}

@@ -1,0 +1,18 @@
+{
+  "name": "Arc Sentinel",
+  "description": "Security-focused AI agent that monitors smart contracts for vulnerabilities, audits token approvals, and alerts users of suspicious on-chain activity in real-time.",
+  "version": "1.0.0",
+  "capabilities": [
+    "contract-audit",
+    "approval-monitoring",
+    "rug-detection",
+    "real-time-alerts",
+    "honeypot-analysis"
+  ],
+  "category": "Security",
+  "author": "0x15F8560a69ceCf111e19dA3b6098eaBb4ddD4631",
+  "chain": "Arc Network",
+  "pricing": "5 USDC per audit",
+  "response_time": "< 30 seconds",
+  "image": "https://api.dicebear.com/7.x/bottts/svg?seed=ArcSentinel&backgroundColor=091e39"
+}

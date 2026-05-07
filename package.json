@@ -1,0 +1,29 @@
+{
+  "name": "arc-agent-marketplace",
+  "version": "1.0.0",
+  "description": "AI Agent Job Marketplace on Arc Network — onchain agent identity + USDC-escrowed task settlement",
+  "main": "index.js",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy": "hardhat run scripts/deploy.ts --network arcTestnet",
+    "deploy:local": "hardhat run scripts/deploy.ts --network hardhat",
+    "interact": "hardhat run scripts/interact.ts --network arcTestnet",
+    "clean": "hardhat clean"
+  },
+  "keywords": ["arc-network", "ai-agents", "marketplace", "usdc", "escrow", "solidity", "hardhat"],
+  "author": "masifangue",
+  "license": "MIT",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^25.6.0",
+    "hardhat": "^2.28.6",
+    "ts-node": "^10.9.2",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.6.1",
+    "dotenv": "^17.4.2"
+  }
+}

@@ -21,6 +21,8 @@ contract DisputeResolver is Ownable {
 
     struct Dispute {
         uint256 jobId;
+        uint256 agentId;
+        address client;
         uint256 votesForAgent;
         uint256 votesForClient;
         uint256 votingDeadline;
@@ -34,6 +36,7 @@ contract DisputeResolver is Ownable {
     address public marketplace;
 
     uint256 public votingPeriod = 5 minutes; // 5 minutes for testnet demo
+    uint256 public constant MIN_QUORUM = 3;
 
     uint256 private _nextDisputeId = 1;
     mapping(uint256 => Dispute) private _disputes;         // disputeId => Dispute
@@ -58,6 +61,10 @@ contract DisputeResolver is Ownable {
     error AlreadyVoted();
     error NotRegisteredAgent();
     error DisputeAlreadyExists(uint256 jobId);
+    error SelfVoteNotAllowed();
+    error InsufficientReputation();
+    error QuorumNotMet();
+    error VotingPeriodTooShort();
 
     // ─── Modifiers ───────────────────────────────────────────────────────────────
 
@@ -88,6 +95,7 @@ contract DisputeResolver is Ownable {
      * @param _newPeriod New voting period in seconds.
      */
     function setVotingPeriod(uint256 _newPeriod) external onlyOwner {
+        require(_newPeriod >= 1 minutes, "Too short");
         votingPeriod = _newPeriod;
         emit VotingPeriodUpdated(_newPeriod);
     }
@@ -95,9 +103,11 @@ contract DisputeResolver is Ownable {
     /**
      * @notice Open a new dispute for a job. Only callable by the marketplace.
      * @param jobId The job ID being disputed.
+     * @param agentId The agent ID involved in the dispute.
+     * @param client The client address involved in the dispute.
      * @return disputeId The newly created dispute ID.
      */
-    function openDispute(uint256 jobId) external onlyMarketplace returns (uint256 disputeId) {
+    function openDispute(uint256 jobId, uint256 agentId, address client) external onlyMarketplace returns (uint256 disputeId) {
         if (jobToDispute[jobId] != 0) revert DisputeAlreadyExists(jobId);
 
         disputeId = _nextDisputeId++;
@@ -105,6 +115,8 @@ contract DisputeResolver is Ownable {
 
         _disputes[disputeId] = Dispute({
             jobId: jobId,
+            agentId: agentId,
+            client: client,
             votesForAgent: 0,
             votesForClient: 0,
             votingDeadline: deadline,
@@ -133,6 +145,21 @@ contract DisputeResolver is Ownable {
         uint256[] memory agentIds = agentRegistry.getAgentsByOwner(msg.sender);
         if (agentIds.length == 0) revert NotRegisteredAgent();
 
+        // Prevent self-voting: agent owner and client cannot vote on their own dispute
+        address disputeAgentOwner = agentRegistry.ownerOfAgent(dispute.agentId);
+        if (msg.sender == disputeAgentOwner || msg.sender == dispute.client) revert SelfVoteNotAllowed();
+
+        // Minimum reputation threshold: voter's agent must have reputationScore >= 0
+        bool hasEligibleAgent = false;
+        for (uint256 i = 0; i < agentIds.length; i++) {
+            (, , , int256 repScore) = agentRegistry.getAgent(agentIds[i]);
+            if (repScore >= 0) {
+                hasEligibleAgent = true;
+                break;
+            }
+        }
+        if (!hasEligibleAgent) revert InsufficientReputation();
+
         _hasVoted[disputeId][msg.sender] = true;
 
         if (voteForAgent) {
@@ -145,15 +172,19 @@ contract DisputeResolver is Ownable {
     }
 
     /**
-     * @notice Resolve a dispute after the voting period has ended. Anyone can call.
+     * @notice Resolve a dispute after the voting period has ended. Only marketplace can call.
      * @param disputeId The dispute to resolve.
      * @return inFavorOfAgent True if majority voted for agent.
      */
-    function resolveDispute(uint256 disputeId) external returns (bool inFavorOfAgent) {
+    function resolveDispute(uint256 disputeId) external onlyMarketplace returns (bool inFavorOfAgent) {
         Dispute storage dispute = _getDispute(disputeId);
 
         if (dispute.status != DisputeStatus.Active) revert DisputeNotActive(disputeId);
         if (block.timestamp <= dispute.votingDeadline) revert VotingPeriodNotEnded();
+
+        // Enforce minimum quorum
+        uint256 totalVotes = dispute.votesForAgent + dispute.votesForClient;
+        if (totalVotes < MIN_QUORUM) revert QuorumNotMet();
 
         // Determine outcome by majority. Tie goes to client (refund).
         inFavorOfAgent = dispute.votesForAgent > dispute.votesForClient;

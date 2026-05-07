@@ -85,8 +85,6 @@ contract AgentBadge is ERC721, Ownable {
             tokenUsed: tokenUsed
         });
 
-        _badgeCounts[to]++;
-
         emit BadgeMinted(tokenId, to, jobId);
     }
 
@@ -117,5 +115,23 @@ contract AgentBadge is ERC721, Ownable {
      */
     function totalBadges() external view returns (uint256) {
         return _nextTokenId - 1;
+    }
+
+    // ─── Internal Functions ──────────────────────────────────────────────────────
+
+    /**
+     * @notice Override _update to track badge counts on transfer.
+     */
+    function _update(address to, uint256 tokenId, address auth) internal override returns (address) {
+        address from = super._update(to, tokenId, auth);
+
+        if (from != address(0)) {
+            _badgeCounts[from]--;
+        }
+        if (to != address(0)) {
+            _badgeCounts[to]++;
+        }
+
+        return from;
     }
 }

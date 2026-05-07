@@ -71,6 +71,8 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
     event DisputeResolved(uint256 indexed jobId, bool releasedToProvider);
     event TokenAdded(address indexed token);
     event TokenRemoved(address indexed token);
+    event JobCancelled(uint256 indexed jobId, address indexed client);
+    event JobTimedOut(uint256 indexed jobId, address indexed client);
 
     // ─── Errors ──────────────────────────────────────────────────────────────────
 
@@ -86,6 +88,9 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
     error TokenNotAllowed(address token);
     error TokenAlreadyAllowed(address token);
     error DisputeResolverNotSet();
+    error ZeroAddress();
+    error ActiveDisputeExists(uint256 jobId);
+    error DeadlineNotExceeded();
 
     // ─── Constructor ─────────────────────────────────────────────────────────────
 
@@ -132,6 +137,7 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
      * @param _disputeResolver The DisputeResolver contract address.
      */
     function setDisputeResolver(address _disputeResolver) external onlyOwner {
+        if (_disputeResolver == address(0)) revert ZeroAddress();
         disputeResolver = DisputeResolver(_disputeResolver);
     }
 
@@ -140,6 +146,7 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
      * @param _agentBadge The AgentBadge contract address.
      */
     function setAgentBadge(address _agentBadge) external onlyOwner {
+        if (_agentBadge == address(0)) revert ZeroAddress();
         agentBadge = AgentBadge(_agentBadge);
     }
 
@@ -227,7 +234,7 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
 
         address agentOwner = agentRegistry.ownerOfAgent(job.agentId);
         if (msg.sender != agentOwner) revert NotAgentOwner(msg.sender);
-        if (block.timestamp > job.deadline) revert DeadlineExceeded();
+        if (block.timestamp >= job.deadline) revert DeadlineExceeded();
 
         job.status = JobStatus.Submitted;
         job.deliverableHash = deliverableHash;
@@ -284,10 +291,56 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
 
         // Open dispute in DisputeResolver if set
         if (address(disputeResolver) != address(0)) {
-            disputeResolver.openDispute(jobId);
+            disputeResolver.openDispute(jobId, job.agentId, job.client);
         }
 
         emit JobDisputed(jobId, reason);
+    }
+
+    /**
+     * @notice Client cancels an open job and gets refunded.
+     * @param jobId The job to cancel.
+     */
+    function cancelJob(uint256 jobId) external nonReentrant {
+        Job storage job = _getJob(jobId);
+
+        if (job.status != JobStatus.Open) {
+            revert InvalidJobStatus(job.status, JobStatus.Open);
+        }
+        if (msg.sender != job.client) revert NotClient(msg.sender);
+
+        job.status = JobStatus.Completed;
+        job.completedAt = block.timestamp;
+
+        // Refund budget to client
+        IERC20(job.paymentToken).safeTransfer(job.client, job.budget);
+
+        emit JobCancelled(jobId, job.client);
+    }
+
+    /**
+     * @notice Client claims timeout on an in-progress job past deadline, gets refunded.
+     * @param jobId The job to claim timeout on.
+     */
+    function claimTimeout(uint256 jobId) external nonReentrant {
+        Job storage job = _getJob(jobId);
+
+        if (job.status != JobStatus.InProgress) {
+            revert InvalidJobStatus(job.status, JobStatus.InProgress);
+        }
+        if (msg.sender != job.client) revert NotClient(msg.sender);
+        if (block.timestamp <= job.deadline) revert DeadlineNotExceeded();
+
+        job.status = JobStatus.Completed;
+        job.completedAt = block.timestamp;
+
+        // Refund budget to client
+        IERC20(job.paymentToken).safeTransfer(job.client, job.budget);
+
+        // Penalize agent reputation (-1)
+        agentRegistry.updateReputation(job.agentId, -1);
+
+        emit JobTimedOut(jobId, job.client);
     }
 
     /**
@@ -331,6 +384,7 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
     /**
      * @notice Admin resolves a dispute — either releases funds to agent or refunds client.
      *         This is the fallback admin resolution (kept for backward compatibility).
+     *         Cannot be used if there is an active dispute vote in DisputeResolver.
      * @param jobId The disputed job.
      * @param releaseToProvider If true, pay the agent. If false, refund the client.
      */
@@ -339,6 +393,12 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
 
         if (job.status != JobStatus.Disputed) {
             revert InvalidJobStatus(job.status, JobStatus.Disputed);
+        }
+
+        // Prevent admin override if there's an active dispute vote
+        if (address(disputeResolver) != address(0)) {
+            uint256 disputeId = disputeResolver.jobToDispute(jobId);
+            if (disputeId != 0) revert ActiveDisputeExists(jobId);
         }
 
         job.status = JobStatus.Completed;

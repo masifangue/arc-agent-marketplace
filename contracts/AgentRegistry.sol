@@ -106,6 +106,7 @@ contract AgentRegistry is Ownable {
      * @param updater The marketplace contract address.
      */
     function setAuthorizedUpdater(address updater) external onlyOwner {
+        require(updater != address(0), "Zero address");
         authorizedUpdater = updater;
         emit AuthorizedUpdaterSet(updater);
     }

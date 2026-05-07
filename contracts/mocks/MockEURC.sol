@@ -4,12 +4,12 @@ pragma solidity ^0.8.24;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 /**
- * @title MockUSDC
- * @notice Mock USDC token for testing purposes only.
+ * @title MockEURC
+ * @notice Mock EURC token for testing purposes only.
  */
-contract MockUSDC is ERC20 {
-    constructor() ERC20("USD Coin", "USDC") {
-        // Mint 1,000,000 USDC to deployer (6 decimals)
+contract MockEURC is ERC20 {
+    constructor() ERC20("Euro Coin", "EURC") {
+        // Mint 1,000,000 EURC to deployer (6 decimals)
         _mint(msg.sender, 1_000_000 * 10 ** 6);
     }
 

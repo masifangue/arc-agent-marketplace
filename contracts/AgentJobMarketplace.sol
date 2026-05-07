@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -7,12 +7,16 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 import "./AgentRegistry.sol";
+import "./DisputeResolver.sol";
+import "./AgentBadge.sol";
 
 /**
  * @title AgentJobMarketplace
- * @notice USDC-escrowed job marketplace for AI agents on Arc Network.
- *         Clients post jobs, agents accept and deliver, payment is released on approval.
- * @dev Uses SafeERC20 for USDC transfers. Integrates with AgentRegistry for identity & reputation.
+ * @notice Multi-token escrowed job marketplace for AI agents on Arc Network.
+ *         Clients post jobs with whitelisted payment tokens (USDC, EURC, etc.),
+ *         agents accept and deliver, payment is released on approval.
+ *         Disputes are resolved via decentralized voting. Badges are minted on completion.
+ * @dev Uses SafeERC20 for token transfers. Integrates with AgentRegistry, DisputeResolver, and AgentBadge.
  */
 contract AgentJobMarketplace is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -20,10 +24,10 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
     // ─── Types ───────────────────────────────────────────────────────────────────
 
     enum JobStatus {
-        Open,       // Job created and funded with USDC escrow
+        Open,       // Job created and funded with token escrow
         InProgress, // Agent accepted the job
         Submitted,  // Agent submitted deliverable
-        Completed,  // Client approved — USDC released to agent
+        Completed,  // Client approved — tokens released to agent
         Disputed    // Client raised a dispute
     }
 
@@ -31,7 +35,7 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
         uint256 jobId;
         uint256 agentId;
         address client;
-        uint256 budget;         // USDC amount (6 decimals on Arc)
+        uint256 budget;         // Token amount (6 decimals on Arc)
         uint256 deadline;       // Unix timestamp
         string description;
         JobStatus status;
@@ -39,12 +43,18 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
         string disputeReason;
         uint256 createdAt;
         uint256 completedAt;
+        address paymentToken;   // The ERC20 token used for this job
     }
 
     // ─── State ───────────────────────────────────────────────────────────────────
 
-    IERC20 public immutable usdc;
     AgentRegistry public immutable agentRegistry;
+    DisputeResolver public disputeResolver;
+    AgentBadge public agentBadge;
+
+    // Multi-token whitelist
+    mapping(address => bool) public allowedTokens;
+    address[] private _allowedTokenList;
 
     uint256 private _nextJobId = 1;
     mapping(uint256 => Job) private _jobs;
@@ -59,6 +69,8 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
     event JobCompleted(uint256 indexed jobId, uint256 indexed agentId, uint256 payout);
     event JobDisputed(uint256 indexed jobId, string reason);
     event DisputeResolved(uint256 indexed jobId, bool releasedToProvider);
+    event TokenAdded(address indexed token);
+    event TokenRemoved(address indexed token);
 
     // ─── Errors ──────────────────────────────────────────────────────────────────
 
@@ -71,42 +83,93 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
     error NotAgentOwner(address caller);
     error DeadlineExceeded();
     error EmptyDescription();
+    error TokenNotAllowed(address token);
+    error TokenAlreadyAllowed(address token);
+    error DisputeResolverNotSet();
 
     // ─── Constructor ─────────────────────────────────────────────────────────────
 
     /**
-     * @param _usdc USDC token address on Arc Testnet (0x3600000000000000000000000000000000000000)
      * @param _agentRegistry Address of the deployed AgentRegistry contract
      */
-    constructor(address _usdc, address _agentRegistry) Ownable(msg.sender) {
-        usdc = IERC20(_usdc);
+    constructor(address _agentRegistry) Ownable(msg.sender) {
         agentRegistry = AgentRegistry(_agentRegistry);
+    }
+
+    // ─── Admin Functions ─────────────────────────────────────────────────────────
+
+    /**
+     * @notice Add a token to the whitelist. Only owner.
+     * @param token The ERC20 token address to allow.
+     */
+    function addAllowedToken(address token) external onlyOwner {
+        if (allowedTokens[token]) revert TokenAlreadyAllowed(token);
+        allowedTokens[token] = true;
+        _allowedTokenList.push(token);
+        emit TokenAdded(token);
+    }
+
+    /**
+     * @notice Remove a token from the whitelist. Only owner.
+     * @param token The ERC20 token address to remove.
+     */
+    function removeAllowedToken(address token) external onlyOwner {
+        if (!allowedTokens[token]) revert TokenNotAllowed(token);
+        allowedTokens[token] = false;
+        // Remove from list
+        for (uint256 i = 0; i < _allowedTokenList.length; i++) {
+            if (_allowedTokenList[i] == token) {
+                _allowedTokenList[i] = _allowedTokenList[_allowedTokenList.length - 1];
+                _allowedTokenList.pop();
+                break;
+            }
+        }
+        emit TokenRemoved(token);
+    }
+
+    /**
+     * @notice Set the DisputeResolver contract. Only owner.
+     * @param _disputeResolver The DisputeResolver contract address.
+     */
+    function setDisputeResolver(address _disputeResolver) external onlyOwner {
+        disputeResolver = DisputeResolver(_disputeResolver);
+    }
+
+    /**
+     * @notice Set the AgentBadge contract. Only owner.
+     * @param _agentBadge The AgentBadge contract address.
+     */
+    function setAgentBadge(address _agentBadge) external onlyOwner {
+        agentBadge = AgentBadge(_agentBadge);
     }
 
     // ─── External Functions ──────────────────────────────────────────────────────
 
     /**
-     * @notice Create a new job for a specific agent. Caller must approve USDC first.
+     * @notice Create a new job for a specific agent. Caller must approve token first.
      * @param agentId The target agent to perform the job.
-     * @param budget USDC amount to escrow for this job.
+     * @param budget Token amount to escrow for this job.
      * @param deadline Unix timestamp by which the job must be completed.
      * @param description Human-readable job description.
+     * @param paymentToken The ERC20 token to use for payment (must be whitelisted).
      * @return jobId The newly created job ID.
      */
     function createJob(
         uint256 agentId,
         uint256 budget,
         uint256 deadline,
-        string calldata description
+        string calldata description,
+        address paymentToken
     ) external nonReentrant returns (uint256 jobId) {
         // Validate inputs
         if (agentRegistry.ownerOfAgent(agentId) == address(0)) revert InvalidAgent(agentId);
         if (budget == 0) revert InvalidBudget();
         if (deadline <= block.timestamp) revert InvalidDeadline();
         if (bytes(description).length == 0) revert EmptyDescription();
+        if (!allowedTokens[paymentToken]) revert TokenNotAllowed(paymentToken);
 
-        // Transfer USDC from client to this contract (escrow)
-        usdc.safeTransferFrom(msg.sender, address(this), budget);
+        // Transfer token from client to this contract (escrow)
+        IERC20(paymentToken).safeTransferFrom(msg.sender, address(this), budget);
 
         jobId = _nextJobId++;
 
@@ -121,7 +184,8 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
             deliverableHash: bytes32(0),
             disputeReason: "",
             createdAt: block.timestamp,
-            completedAt: 0
+            completedAt: 0,
+            paymentToken: paymentToken
         });
 
         _clientJobs[msg.sender].push(jobId);
@@ -172,7 +236,8 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Client approves the deliverable, releasing USDC to the agent owner.
+     * @notice Client approves the deliverable, releasing tokens to the agent owner.
+     *         Also mints an NFT badge to the agent owner.
      * @param jobId The job to approve.
      */
     function approveDeliverable(uint256 jobId) external nonReentrant {
@@ -186,18 +251,23 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
         job.status = JobStatus.Completed;
         job.completedAt = block.timestamp;
 
-        // Release USDC to agent owner
+        // Release tokens to agent owner
         address agentOwner = agentRegistry.ownerOfAgent(job.agentId);
-        usdc.safeTransfer(agentOwner, job.budget);
+        IERC20(job.paymentToken).safeTransfer(agentOwner, job.budget);
 
         // Update agent reputation (+1)
         agentRegistry.updateReputation(job.agentId, 1);
+
+        // Mint NFT badge
+        if (address(agentBadge) != address(0)) {
+            agentBadge.mintBadge(agentOwner, jobId, job.budget, job.paymentToken);
+        }
 
         emit JobCompleted(jobId, job.agentId, job.budget);
     }
 
     /**
-     * @notice Client disputes a submitted job.
+     * @notice Client disputes a submitted job. Opens a dispute in DisputeResolver.
      * @param jobId The job to dispute.
      * @param reason Human-readable reason for the dispute.
      */
@@ -212,11 +282,55 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
         job.status = JobStatus.Disputed;
         job.disputeReason = reason;
 
+        // Open dispute in DisputeResolver if set
+        if (address(disputeResolver) != address(0)) {
+            disputeResolver.openDispute(jobId);
+        }
+
         emit JobDisputed(jobId, reason);
     }
 
     /**
+     * @notice Resolve a dispute after voting has concluded in DisputeResolver.
+     *         Anyone can call this to finalize the dispute resolution.
+     * @param jobId The disputed job.
+     */
+    function resolveDisputeVoting(uint256 jobId) external nonReentrant {
+        Job storage job = _getJob(jobId);
+
+        if (job.status != JobStatus.Disputed) {
+            revert InvalidJobStatus(job.status, JobStatus.Disputed);
+        }
+        if (address(disputeResolver) == address(0)) revert DisputeResolverNotSet();
+
+        uint256 disputeId = disputeResolver.jobToDispute(jobId);
+        bool inFavorOfAgent = disputeResolver.resolveDispute(disputeId);
+
+        job.status = JobStatus.Completed;
+        job.completedAt = block.timestamp;
+
+        if (inFavorOfAgent) {
+            // Pay the agent
+            address agentOwner = agentRegistry.ownerOfAgent(job.agentId);
+            IERC20(job.paymentToken).safeTransfer(agentOwner, job.budget);
+            agentRegistry.updateReputation(job.agentId, 1);
+
+            // Mint badge on agent win
+            if (address(agentBadge) != address(0)) {
+                agentBadge.mintBadge(agentOwner, jobId, job.budget, job.paymentToken);
+            }
+        } else {
+            // Refund the client
+            IERC20(job.paymentToken).safeTransfer(job.client, job.budget);
+            agentRegistry.updateReputation(job.agentId, -1);
+        }
+
+        emit DisputeResolved(jobId, inFavorOfAgent);
+    }
+
+    /**
      * @notice Admin resolves a dispute — either releases funds to agent or refunds client.
+     *         This is the fallback admin resolution (kept for backward compatibility).
      * @param jobId The disputed job.
      * @param releaseToProvider If true, pay the agent. If false, refund the client.
      */
@@ -233,11 +347,16 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
         if (releaseToProvider) {
             // Pay the agent
             address agentOwner = agentRegistry.ownerOfAgent(job.agentId);
-            usdc.safeTransfer(agentOwner, job.budget);
+            IERC20(job.paymentToken).safeTransfer(agentOwner, job.budget);
             agentRegistry.updateReputation(job.agentId, 1);
+
+            // Mint badge
+            if (address(agentBadge) != address(0)) {
+                agentBadge.mintBadge(agentOwner, jobId, job.budget, job.paymentToken);
+            }
         } else {
             // Refund the client
-            usdc.safeTransfer(job.client, job.budget);
+            IERC20(job.paymentToken).safeTransfer(job.client, job.budget);
             agentRegistry.updateReputation(job.agentId, -1);
         }
 
@@ -280,6 +399,14 @@ contract AgentJobMarketplace is Ownable, ReentrancyGuard {
      */
     function totalJobs() external view returns (uint256) {
         return _nextJobId - 1;
+    }
+
+    /**
+     * @notice Get all allowed token addresses.
+     * @return Array of allowed token addresses.
+     */
+    function getAllowedTokens() external view returns (address[] memory) {
+        return _allowedTokenList;
     }
 
     // ─── Internal Functions ──────────────────────────────────────────────────────
